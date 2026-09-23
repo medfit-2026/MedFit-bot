@@ -1,4 +1,5 @@
 import os
+import asyncio
 import threading
 from flask import Flask
 from bot_logic import run_telegram_bot
@@ -17,6 +18,8 @@ def health():
 
 
 def start_bot():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     run_telegram_bot()
 
 
