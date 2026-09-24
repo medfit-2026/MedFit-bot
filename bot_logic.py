@@ -1,18 +1,25 @@
 import os
 import logging
 import aiohttp
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
 import database as db
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
-MANAGER_USERNAME = "@Sonyka12345"  # ← ваш ник
+MANAGER_USERNAME = "@Sonyka12345"
 YANDEX_API_KEY = os.environ.get("YANDEX_API_KEY")
 YANDEX_FOLDER_ID = os.environ.get("YANDEX_FOLDER_ID")
 
@@ -22,11 +29,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ===== ГРУППЫ =====
+COURSES = {
+    "1": (101, 120),
+    "2": (201, 220),
+    "3": (301, 320),
+    "4": (401, 420),
+    "5": (501, 520),
+    "6": (601, 620),
+}
+
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["📊 Мой профиль", "🏆 Рейтинг"],
         ["👟 Ввести шаги", "🏃 Ввести бег"],
-        ["📋 Тест", "🎯 Достижения"],
+        ["🧠 Викторина", "🎯 Достижения"],
         ["👥 Моя группа", "📍 Отметиться на пробежке"],
         ["🤖 Спросить ИИ", "👨‍🏫 Связаться с менеджером"],
         ["ℹ️ Помощь"],
@@ -35,6 +52,7 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 )
 
 
+# ===== БАЗОВЫЕ =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     db.create_user(user.id, user.username or "", user.full_name)
@@ -46,16 +64,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Считать очки (XP) за шаги и бег\n"
         "• Вести стрик — дни без пропусков\n"
         "• Рейтинг группы\n"
-        "• Фиксировать нормативы\n"
-        "• Отмечать пробежки по геолокации\n"
-        "• Отвечать на вопросы через ИИ\n\n"
-        "Сначала укажите группу:\n"
-        "`/group Леч-101`\n\n"
+        "• Викторины по физкультуре\n"
+        "• Фиксировать нормативы\n\n"
+        "Сначала выберите группу: `/group`\n\n"
         "Потом вводите активность:\n"
         "`/add 8000` — шаги\n"
         "`/run 5.5` — бег (км)\n"
-        "`/test Бег100м 5` — норматив\n\n"
-        "Спросите ИИ: `/ai Как правильно бегать?`"
+        "`/quiz` — викторина"
     )
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
 
@@ -65,37 +80,112 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📖 *Команды бота*\n\n"
         "*Настройка:*\n"
         "/start — регистрация\n"
-        "/group Леч-101 — указать группу\n\n"
+        "/group — выбрать группу\n\n"
         "*Активность:*\n"
         "/add 8000 — шаги\n"
         "/run 5.5 — бег (км)\n"
         "/test Бег100м 5 — норматив\n"
-        "📍 Отметиться на пробежке — кнопка\n"
-        "/points — мои точки пробежек\n\n"
-        "*ИИ:*\n"
-        "/ai вопрос — спросить ассистента\n\n"
+        "📍 Отметиться на пробежке\n"
+        "/points — мои точки\n\n"
+        "*Викторина:*\n"
+        "/quiz — пройти викторину\n"
+        "/results — мои результаты\n\n"
         "*Просмотр:*\n"
-        "/stats — мой профиль\n"
+        "/stats — профиль\n"
         "/top — общий рейтинг\n"
         "/topgroup — рейтинг группы\n"
-        "/achievements — достижения\n\n"
+        "/achievements — ачивки\n\n"
         "*Очки:* 1 XP = 100 шагов = 0.05 км бега.\n"
-        "*Тесты:* 50 XP × оценка."
+        "*Тесты:* 50 XP × оценка.\n"
+        "*Викторина:* 20 XP за правильный ответ."
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
-async def set_group_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Использование: /group Леч-101")
+# ===== ВЫБОР ГРУППЫ =====
+async def choose_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает кнопки курсов."""
+    keyboard = [
+        [InlineKeyboardButton("1 курс", callback_data="course:1"),
+         InlineKeyboardButton("2 курс", callback_data="course:2")],
+        [InlineKeyboardButton("3 курс", callback_data="course:3"),
+         InlineKeyboardButton("4 курс", callback_data="course:4")],
+        [InlineKeyboardButton("5 курс", callback_data="course:5"),
+         InlineKeyboardButton("6 курс", callback_data="course:6")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "📚 Выберите свой курс:",
+        reply_markup=reply_markup,
+    )
+
+
+async def course_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает группы выбранного курса."""
+    query = update.callback_query
+    await query.answer()
+
+    course = query.data.split(":")[1]
+    start_num, end_num = COURSES[course]
+
+    # Строим кнопки группами по 5 в ряд
+    keyboard = []
+    row = []
+    for i in range(start_num, end_num + 1):
+        row.append(InlineKeyboardButton(str(i), callback_data=f"setgroup:{i}"))
+        if len(row) == 5:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+
+    keyboard.append([InlineKeyboardButton("« Назад к курсам", callback_data="course:back")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        f"📚 *{course} курс* — выберите группу:",
+        parse_mode="Markdown",
+        reply_markup=reply_markup,
+    )
+
+
+async def group_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохраняет выбранную группу."""
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+
+    if data == "course:back":
+        # Возврат к курсам
+        keyboard = [
+            [InlineKeyboardButton("1 курс", callback_data="course:1"),
+             InlineKeyboardButton("2 курс", callback_data="course:2")],
+            [InlineKeyboardButton("3 курс", callback_data="course:3"),
+             InlineKeyboardButton("4 курс", callback_data="course:4")],
+            [InlineKeyboardButton("5 курс", callback_data="course:5"),
+             InlineKeyboardButton("6 курс", callback_data="course:6")],
+        ]
+        await query.edit_message_text(
+            "📚 Выберите свой курс:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
         return
-    group_name = " ".join(context.args)
+
+    # data = "setgroup:101"
+    group_num = data.split(":")[1]
     user = update.effective_user
     db.create_user(user.id, user.username or "", user.full_name)
-    db.set_group(user.id, group_name)
-    await update.message.reply_text(f"✅ Вы в группе: *{group_name}*", parse_mode="Markdown")
+    db.set_group(user.id, group_num)
+
+    await query.edit_message_text(
+        f"✅ Вы в группе: *{group_num}*\n\n"
+        f"Теперь рейтинг группы доступен по кнопке «👥 Моя группа».",
+        parse_mode="Markdown",
+    )
 
 
+# ===== ПРОФИЛЬ И РЕЙТИНГ =====
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     row = db.get_user(user.id)
@@ -118,7 +208,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         f"📊 *Ваш профиль*\n\n"
         f"👤 {full_name}\n"
-        f"👥 Группа: {group_name or '— (введите /group)'}\n"
+        f"👥 Группа: {group_name or '— (нажмите /group)'}\n"
         f"🎖 {level}\n"
         f"⭐ XP: {points}\n"
         f"🔥 Стрик: {streak} дн.\n"
@@ -147,7 +237,7 @@ async def top_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     row = db.get_user(user.id)
     if not row or not row[3]:
-        await update.message.reply_text("Сначала укажите группу: /group Леч-101")
+        await update.message.reply_text("Сначала выберите группу: /group")
         return
     group_name = row[3]
     rows = db.get_top_by_group(group_name)
@@ -159,6 +249,7 @@ async def top_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
+# ===== ШАГИ И БЕГ =====
 async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Использование: /add 8000")
@@ -185,8 +276,7 @@ async def process_steps(update: Update, steps: int):
     await update.message.reply_text(
         f"✅ Записано: {steps:,} шагов\n"
         f"⭐ +{earned} XP (всего: {total_points})\n"
-        f"🔥 Стрик: {streak} дн.\n\n"
-        f"Так держать, будущий врач! 💪"
+        f"🔥 Стрик: {streak} дн."
     )
     await check_achievements(update, total_points, streak)
 
@@ -246,6 +336,183 @@ async def add_test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ===== ГЕОЛОКАЦИЯ =====
+async def request_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = ReplyKeyboardMarkup(
+        [[KeyboardButton("📍 Отправить локацию", request_location=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+    await update.message.reply_text(
+        "Нажмите кнопку ниже, чтобы отметить точку пробежки.\n"
+        "⚠️ Работает только в личке.",
+        reply_markup=keyboard,
+    )
+
+
+async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    location = update.message.location
+    if not location:
+        await update.message.reply_text("Не удалось получить координаты.")
+        return
+    db.create_user(user.id, user.username or "", user.full_name)
+    db.add_run_point(user.id, location.latitude, location.longitude)
+    maps_url = f"https://www.google.com/maps?q={location.latitude},{location.longitude}"
+    await update.message.reply_text(
+        f"📍 *Точка сохранена!*\n\n"
+        f"Широта: `{location.latitude:.5f}`\n"
+        f"Долгота: `{location.longitude:.5f}`\n\n"
+        f"[Открыть на карте]({maps_url})",
+        parse_mode="Markdown",
+        reply_markup=MAIN_KEYBOARD,
+        disable_web_page_preview=True,
+    )
+
+
+async def my_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    points = db.get_run_points(user.id)
+    if not points:
+        await update.message.reply_text("Точек пока нет.")
+        return
+    lines = ["📍 *Ваши последние точки:*\n"]
+    for i, (lat, lon, d) in enumerate(points[:5]):
+        lines.append(f"{i + 1}. {d} — [{lat:.4f}, {lon:.4f}](https://www.google.com/maps?q={lat},{lon})")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown", disable_web_page_preview=True)
+
+
+# ===== ВИКТОРИНА =====
+async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    questions = db.get_questions(5)
+    if not questions:
+        await update.message.reply_text("Вопросы пока не добавлены.")
+        return
+    context.user_data["quiz"] = {
+        "questions": questions,
+        "index": 0,
+        "correct": 0,
+        "total": len(questions),
+    }
+    await send_question(update, context)
+
+
+async def send_question(update, context):
+    quiz = context.user_data.get("quiz")
+    if not quiz:
+        return
+    idx = quiz["index"]
+    if idx >= quiz["total"]:
+        await finish_quiz(update, context)
+        return
+
+    q_id, text, a, b, c, correct = quiz["questions"][idx]
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"A) {a}", callback_data=f"quiz:{q_id}:A")],
+        [InlineKeyboardButton(f"B) {b}", callback_data=f"quiz:{q_id}:B")],
+        [InlineKeyboardButton(f"C) {c}", callback_data=f"quiz:{q_id}:C")],
+    ])
+    msg = f"❓ *Вопрос {idx + 1}/{quiz['total']}*\n\n{text}"
+    if update.callback_query:
+        await update.callback_query.message.reply_text(msg, parse_mode="Markdown", reply_markup=keyboard)
+    else:
+        await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=keyboard)
+
+
+async def quiz_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    _, q_id, chosen = query.data.split(":")
+    quiz = context.user_data.get("quiz")
+    if not quiz:
+        await query.edit_message_text("Викторина не активна. /quiz")
+        return
+
+    current = quiz["questions"][quiz["index"]]
+    correct = current[5]
+
+    if chosen == correct:
+        quiz["correct"] += 1
+        feedback = "✅ Правильно!"
+    else:
+        feedback = f"❌ Неправильно. Верный ответ: {correct}"
+
+    quiz["index"] += 1
+    await query.edit_message_text(feedback, parse_mode="Markdown")
+    await send_question(update, context)
+
+
+async def finish_quiz(update, context):
+    quiz = context.user_data.pop("quiz")
+    user = update.effective_user
+    correct = quiz["correct"]
+    total = quiz["total"]
+    percent = int(correct / total * 100)
+
+    db.create_user(user.id, user.username or "", user.full_name)
+    db.save_quiz_result(user.id, correct, total)
+
+    xp = correct * 20
+    text = (
+        f"🏁 *Викторина завершена!*\n\n"
+        f"✅ Правильных: {correct}/{total} ({percent}%)\n"
+        f"⭐ +{xp} XP\n\n"
+    )
+    if percent == 100:
+        text += "🥇 Идеально!"
+    elif percent >= 60:
+        text += "💪 Хороший результат!"
+    else:
+        text += "📚 Стоит повторить материал."
+
+    if xp > 0:
+        result = db.add_steps(user.id, xp * 100)
+        if result:
+            _, total_points, _ = result
+            text += f"\n⭐ Всего XP: {total_points}"
+
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def add_question_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.username != "Sonyka12345":
+        await update.message.reply_text("⛔ Только преподаватель.")
+        return
+    if len(context.args) < 5:
+        await update.message.reply_text(
+            "Формат:\n"
+            "`/addq Вопрос? | A | B | C | B`",
+            parse_mode="Markdown",
+        )
+        return
+    full = " ".join(context.args)
+    parts = [p.strip() for p in full.split("|")]
+    if len(parts) < 5:
+        await update.message.reply_text("Нужно 5 частей через `|`", parse_mode="Markdown")
+        return
+    question, a, b, c, correct = parts[0], parts[1], parts[2], parts[3], parts[4].upper()
+    if correct not in ("A", "B", "C"):
+        await update.message.reply_text("Правильный ответ — A, B или C.")
+        return
+    db.add_question(question, a, b, c, correct)
+    await update.message.reply_text("✅ Вопрос добавлен!")
+
+
+async def my_results(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    results = db.get_last_quiz_results(user.id)
+    if not results:
+        await update.message.reply_text("Вы ещё не проходили викторину. /quiz")
+        return
+    lines = ["📊 *Ваши последние викторины:*\n"]
+    for correct, total, d in results:
+        percent = int(correct / total * 100)
+        lines.append(f"• {d}: {correct}/{total} ({percent}%)")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+# ===== АЧИВКИ И МЕНЕДЖЕР =====
 async def check_achievements(update, points, streak):
     user = update.effective_user
     existing = db.get_achievements(user.id)
@@ -253,7 +520,7 @@ async def check_achievements(update, points, streak):
     if "first_steps" not in existing:
         to_grant.append(("first_steps", "🥉 *Первые шаги*!"))
     if points >= 1000 and "1000xp" not in existing:
-        to_grant.append(("1000xp", "🥈 *1000 XP* — постоянный участник!"))
+        to_grant.append(("1000xp", "🥈 *1000 XP*!"))
     if streak >= 7 and "streak7" not in existing:
         to_grant.append(("streak7", "🥇 *Стрик 7 дней*!"))
     if points >= 10000 and "legend" not in existing:
@@ -290,71 +557,13 @@ async def contact_manager(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def request_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = ReplyKeyboardMarkup(
-        [[KeyboardButton("📍 Отправить локацию", request_location=True)]],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
-    await update.message.reply_text(
-        "Нажмите кнопку ниже, чтобы отметить точку пробежки.\n\n"
-        "⚠️ Работает только в личном чате.",
-        reply_markup=keyboard,
-    )
-
-
-async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    location = update.message.location
-
-    if not location:
-        await update.message.reply_text("Не удалось получить координаты.")
-        return
-
-    db.create_user(user.id, user.username or "", user.full_name)
-    db.add_run_point(user.id, location.latitude, location.longitude)
-
-    maps_url = f"https://www.google.com/maps?q={location.latitude},{location.longitude}"
-
-    await update.message.reply_text(
-        f"📍 *Точка сохранена!*\n\n"
-        f"Широта: `{location.latitude:.5f}`\n"
-        f"Долгота: `{location.longitude:.5f}`\n\n"
-        f"[Открыть на карте]({maps_url})",
-        parse_mode="Markdown",
-        reply_markup=MAIN_KEYBOARD,
-        disable_web_page_preview=True,
-    )
-
-
-async def my_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    points = db.get_run_points(user.id)
-    if not points:
-        await update.message.reply_text(
-            "У вас пока нет сохранённых точек. Нажмите «📍 Отметиться на пробежке»."
-        )
-        return
-
-    lines = ["📍 *Ваши последние точки:*\n"]
-    for i, (lat, lon, d) in enumerate(points[:5]):
-        lines.append(f"{i + 1}. {d} — [{lat:.4f}, {lon:.4f}](https://www.google.com/maps?q={lat},{lon})")
-    await update.message.reply_text(
-        "\n".join(lines), parse_mode="Markdown", disable_web_page_preview=True
-    )
-
-
+# ===== ИИ =====
 async def ask_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text(
-            "Задайте вопрос: /ai Как правильно бегать?"
-        )
+        await update.message.reply_text("Формат: /ai Как правильно бегать?")
         return
-
     if not YANDEX_API_KEY or not YANDEX_FOLDER_ID:
-        await update.message.reply_text(
-            "⚠️ ИИ пока не настроен. Добавьте YANDEX_API_KEY и YANDEX_FOLDER_ID в Environment."
-        )
+        await update.message.reply_text("⚠️ ИИ пока не настроен.")
         return
 
     user_question = " ".join(context.args)
@@ -374,80 +583,4 @@ async def ask_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "completionOptions": {"stream": False, "temperature": 0.6, "maxTokens": 200},
         "messages": [
             {"role": "system", "text": "Ты помощник по физкультуре для студентов-медиков."},
-            {"role": "user", "text": prompt},
-        ],
-    }
-
-    await update.message.reply_text("⏳ Думаю...")
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=payload) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    answer = data["result"]["alternatives"][0]["message"]["text"]
-                    await update.message.reply_text(f"🤖 {answer}")
-                else:
-                    error_text = await resp.text()
-                    logger.error(f"YandexGPT error: {error_text}")
-                    await update.message.reply_text(f"⚠️ Ошибка ИИ: {resp.status}")
-    except Exception as e:
-        logger.error(f"AI error: {e}")
-        await update.message.reply_text(f"❌ Ошибка соединения: {e}")
-
-
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    if text == "📊 Мой профиль":
-        await stats(update, context)
-    elif text == "🏆 Рейтинг":
-        await top(update, context)
-    elif text == "👥 Моя группа":
-        await top_group(update, context)
-    elif text == "🎯 Достижения":
-        await achievements(update, context)
-    elif text == "👨‍🏫 Связаться с менеджером":
-        await contact_manager(update, context)
-    elif text == "ℹ️ Помощь":
-        await help_command(update, context)
-    elif text == "👟 Ввести шаги":
-        await update.message.reply_text("Введите число шагов за сегодня, например: 8000")
-    elif text == "🏃 Ввести бег":
-        await update.message.reply_text("Введите километры: /run 5.5")
-    elif text == "📋 Тест":
-        await update.message.reply_text("Формат: /test Бег100м 5 (оценка 1–5)")
-    elif text == "📍 Отметиться на пробежке":
-        await request_location(update, context)
-    elif text == "🤖 Спросить ИИ":
-        await update.message.reply_text("Формат: /ai Ваш вопрос")
-    else:
-        try:
-            steps = int(text.replace(" ", ""))
-            if 0 < steps <= 100000:
-                await process_steps(update, steps)
-            else:
-                await update.message.reply_text("Введите число от 1 до 100 000.")
-        except ValueError:
-            await update.message.reply_text("Не понял. Используйте кнопки или /help")
-
-
-def run_telegram_bot():
-    db.init_db()
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("group", set_group_command))
-    app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(CommandHandler("top", top))
-    app.add_handler(CommandHandler("topgroup", top_group))
-    app.add_handler(CommandHandler("add", add_command))
-    app.add_handler(CommandHandler("run", add_run_command))
-    app.add_handler(CommandHandler("test", add_test_command))
-    app.add_handler(CommandHandler("achievements", achievements))
-    app.add_handler(CommandHandler("manager", contact_manager))
-    app.add_handler(CommandHandler("points", my_points))
-    app.add_handler(CommandHandler("ai", ask_ai))
-    app.add_handler(MessageHandler(filters.LOCATION, handle_location))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    logger.info("Bot started (polling)...")
-    app.run_polling()
+            {"role": "user",
